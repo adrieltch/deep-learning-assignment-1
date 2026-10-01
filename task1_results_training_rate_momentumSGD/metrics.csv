@@ -1,0 +1,3 @@
+model,input_features,hidden_layers,hidden_units,epochs,learning_rate,batch_size,momentum,training_rms,test_rms,training_pixels,test_pixels
+raw,2,2,128 128,800,0.01,512,0.9,0.32417196,0.32525880,31472,3497
+fourier,26,2,128 128,800,0.01,512,0.9,0.09632490,0.11386333,31472,3497

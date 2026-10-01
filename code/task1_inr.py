@@ -23,10 +23,19 @@ def parse_args():
                         help="Input image (default: 2026_NYCU.png)")
     parser.add_argument("--output-dir", default="task1_results",
                         help="Directory for plots and metrics")
-    parser.add_argument("--epochs", type=int, default=800,
-                        help="Training epochs; default 500 includes 100/200/400 checkpoints")
+    parser.add_argument(
+        "--epochs", type=int, default=800,
+        help="Training epochs; default 800 includes the requested checkpoints"
+    )
     parser.add_argument("--batch-size", type=int, default=512)
-    parser.add_argument("--learning-rate", type=float, default=0.001)
+    parser.add_argument(
+        "--learning-rate", type=float, default=0.01,
+        help="SGD learning rate; 0.01 works well with momentum"
+    )
+    parser.add_argument(
+        "--momentum", type=float, default=0.9,
+        help="Momentum coefficient for SGD; default 0.9"
+    )
     parser.add_argument("--hidden", type=int, nargs="+", default=[128, 128],
                         help="Hidden-layer widths (default: 128 128)")
     parser.add_argument("--fourier-bands", type=int, default=6,
@@ -40,6 +49,8 @@ def parse_args():
         parser.error("--batch-size must be positive")
     if args.learning_rate <= 0:
         parser.error("--learning-rate must be positive")
+    if not 0.0 <= args.momentum < 1.0:
+        parser.error("momentum must be in [0, 1)")
     if args.fourier_bands < 1:
         parser.error("--fourier-bands must be positive")
     if any(width < 1 for width in args.hidden):
@@ -87,7 +98,6 @@ def rms_error(targets, predictions):
     """RMS over all RGB values, as requested for evaluation."""
     return float(np.sqrt(mse_loss(targets, predictions)))
 
-# chnage hidden layer to tanh activation
 class MLP:
     """A tanh multilayer perceptron with a linear RGB output layer."""
 
@@ -97,19 +107,16 @@ class MLP:
         self.weights = []
         self.biases = []
 
-        for layer_index, (fan_in, fan_out) in enumerate(
-            zip(layer_sizes[:-1], layer_sizes[1:])
-        ):
-            is_hidden_layer = layer_index < len(layer_sizes) - 2
-            if is_hidden_layer:
-                # He initialization for tanh hidden layers.
-                scale = np.sqrt(2.0 / fan_in)
-            else:
-                # Xavier/Glorot initialization for the linear output layer.
-                scale = np.sqrt(2.0 / (fan_in + fan_out))
+        for fan_in, fan_out in zip(layer_sizes[:-1], layer_sizes[1:]):
+            # Xavier/Glorot initialization is appropriate for tanh layers
+            # and keeps the linear RGB output in a useful range at startup.
+            scale = np.sqrt(2.0 / (fan_in + fan_out))
             weight = rng.normal(0.0, scale, size=(fan_in, fan_out))
             self.weights.append(weight.astype(np.float32))
             self.biases.append(np.zeros((1, fan_out), dtype=np.float32))
+
+        self.weight_velocity = [np.zeros_like(weight) for weight in self.weights]
+        self.bias_velocity = [np.zeros_like(bias) for bias in self.biases]
 
     def forward(self, inputs, return_cache=False):
         """Compute predictions; optionally retain values needed for backprop."""
@@ -152,11 +159,18 @@ class MLP:
 
         return weight_gradients, bias_gradients
 
-    def update(self, weight_gradients, bias_gradients, learning_rate):
-        """One SGD parameter update."""
+    def update(self, weight_gradients, bias_gradients, learning_rate,
+               momentum=0.0):
+        """One SGD-with-momentum parameter update."""
         for index in range(len(self.weights)):
-            self.weights[index] -= learning_rate * weight_gradients[index]
-            self.biases[index] -= learning_rate * bias_gradients[index]
+            self.weight_velocity[index] = (
+                momentum * self.weight_velocity[index] + weight_gradients[index]
+            )
+            self.bias_velocity[index] = (
+                momentum * self.bias_velocity[index] + bias_gradients[index]
+            )
+            self.weights[index] -= learning_rate * self.weight_velocity[index]
+            self.biases[index] -= learning_rate * self.bias_velocity[index]
 
     def predict(self, inputs, chunk_size=8192):
         """Predict in chunks to keep memory use modest for larger images."""
@@ -181,6 +195,10 @@ def train_model(name, features, colors, train_indices, test_indices,
         output_size=3,
         seed=args.seed,
     )
+    # Start from the best constant RGB predictor.  This avoids spending the
+    # first several epochs moving the output bias away from zero and makes the
+    # relatively larger learning rate useful from the first mini-batch.
+    model.biases[-1][0] = colors[train_indices].mean(axis=0)
     # Use a reproducible shuffled mini-batch order for each model.
     shuffle_rng = np.random.default_rng(args.seed + 100)
     history = {"train_mse": [], "test_mse": []}
@@ -200,7 +218,8 @@ def train_model(name, features, colors, train_indices, test_indices,
                 predictions, batch_targets, cache
             )
             model.update(
-                weight_gradients, bias_gradients, args.learning_rate
+                weight_gradients, bias_gradients,
+                args.learning_rate, args.momentum
             )
 
         # Evaluation does not update the weights. Keep the test pixels held out
@@ -305,6 +324,7 @@ def save_metrics(results, args, train_count, test_count, output_dir):
         writer.writerow([
             "model", "input_features", "hidden_layers", "hidden_units",
             "epochs", "learning_rate", "batch_size",
+            "momentum",
             "training_rms", "test_rms", "training_pixels", "test_pixels"
         ])
         for result in results:
@@ -316,6 +336,7 @@ def save_metrics(results, args, train_count, test_count, output_dir):
                 args.epochs,
                 args.learning_rate,
                 args.batch_size,
+                args.momentum,
                 f'{result["train_rms"]:.8f}',
                 f'{result["test_rms"]:.8f}',
                 train_count,
@@ -348,7 +369,7 @@ def main():
     print(
         f"Architecture: input -> {args.hidden} -> 3 linear RGB outputs; "
         f"epochs={args.epochs}, batch={args.batch_size}, "
-        f"learning_rate={args.learning_rate}"
+        f"learning_rate={args.learning_rate}, momentum={args.momentum}"
     )
 
     plt.imsave(output_dir / "ground_truth.png", image)
