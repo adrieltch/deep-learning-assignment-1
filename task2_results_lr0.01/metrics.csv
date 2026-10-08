@@ -1,0 +1,5 @@
+model,hidden_layers,hidden_units,activation,epochs,learning_rate,momentum,batch_size,training_loss,test_loss,training_error_rate,test_error_rate,training_samples,test_samples
+main,2,16 16,relu,1000,0.01,0.9,32,0.00028780,0.40465340,0.00000000,0.07042254,280,71
+latent_width_2,1,2,relu,1000,0.01,0.9,32,0.06256893,2.32858157,0.02142857,0.22535211,280,71
+latent_width_8,1,8,relu,1000,0.01,0.9,32,0.00307504,0.28404227,0.00000000,0.07042254,280,71
+latent_width_16,1,16,relu,1000,0.01,0.9,32,0.00150163,0.26182520,0.00000000,0.04225352,280,71
